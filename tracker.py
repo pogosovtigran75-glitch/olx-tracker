@@ -4,9 +4,8 @@ import re
 import time
 import requests
 
-MODELS = range(13, 19)   # iPhone 13 ... 18
-MAX_USD = 1000           # бюджет в долларах
-USD_RATE = 12500         # сум за 1$ (примерно, можно поправить)
+MAX_USD = 1000
+USD_RATE = 12500
 CITIES = ["ташкент", "tashkent"]
 BAD_WORDS = ["чехол", "case", "стекло", "кабель", "зарядк",
              "ремонт", "куплю", "ищу", "запчаст", "коробк"]
@@ -16,7 +15,23 @@ CHAT = os.environ["TG_CHAT"]
 SEEN_FILE = "seen.json"
 
 MODEL_RE = re.compile(r"(iphone|айфон)\s*-?\s*(1[3-8])(?!\d)", re.I)
-QUERIES = [f"{name} {n}" for n in MODELS for name in ("iphone", "айфон")]
+QUERIES = ["iphone", "айфон"]
+
+HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/124.0.0.0 Safari/537.36"),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    "Referer": "https://www.olx.uz/",
+    "Origin": "https://www.olx.uz",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+}
+
+session = requests.Session()
+session.headers.update(HEADERS)
 
 
 def tg(text):
@@ -27,20 +42,36 @@ def tg(text):
     )
 
 
+def warm_up():
+    try:
+        session.get(
+            "https://www.olx.uz/",
+            headers={"Accept": "text/html,application/xhtml+xml"},
+            timeout=30,
+        )
+    except Exception as e:
+        print("прогрев не удался:", e)
+    time.sleep(2)
+
+
 def get_offers(query):
-    r = requests.get(
-        "https://www.olx.uz/api/v1/offers/",
-        params={
-            "query": query,
-            "limit": 40,
-            "offset": 0,
-            "sort_by": "created_at:desc",
-        },
-        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-        timeout=30,
-    )
+    for attempt in range(3):
+        r = session.get(
+            "https://www.olx.uz/api/v1/offers/",
+            params={
+                "query": query,
+                "limit": 50,
+                "offset": 0,
+                "sort_by": "created_at:desc",
+            },
+            timeout=30,
+        )
+        print(query, "статус", r.status_code)
+        if r.status_code == 200:
+            return r.json().get("data", [])
+        time.sleep(5 * (attempt + 1))
+    print("ответ:", r.text[:300])
     r.raise_for_status()
-    return r.json().get("data", [])
 
 
 def price_usd(o):
@@ -74,6 +105,7 @@ def suitable(o):
     return True
 
 
+warm_up()
 offers = {}
 fails = 0
 for q in QUERIES:
@@ -83,7 +115,7 @@ for q in QUERIES:
     except Exception as e:
         fails += 1
         print("ошибка:", q, e)
-    time.sleep(1)
+    time.sleep(3)
 
 if fails == len(QUERIES):
     raise SystemExit("OLX не отвечает")
@@ -103,7 +135,7 @@ else:
             continue
         usd, label = price_usd(o)
         approx = f" (~{usd:.0f}$)" if usd is not None else ""
-        tg(f"{o.get('title')}\n{label}{approx}\n{city_of(o)}\n{o.get('url')}")
+        tg(f"{o.get('title')}\n{label}\n{city_of(o)}\n{o.get('url')}")
 
 seen.update(offers.keys())
 json.dump(sorted(seen)[-5000:], open(SEEN_FILE, "w"))
